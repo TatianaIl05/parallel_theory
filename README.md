@@ -1,1 +1,1 @@
-# parallel_theory
+# Parallel_theory
