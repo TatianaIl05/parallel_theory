@@ -73,6 +73,8 @@ int main() {
         
         double mem_size = ((double)(m * n + m + n) * sizeof(double)) / (1024 * 1024 * 1024);
         printf("Используется памяти: %.2f GB\n\n", mem_size);
+
+        parallel_initialize(a, b, m, n);
         
         omp_set_num_threads(1);
         double t_start = wtime();
