@@ -53,7 +53,7 @@ void matrix_vector_product_parallel(double *a, double *b, double *c, int m, int 
 }
 
 int main() {
-    int sizes[] = {20000}; 
+    int sizes[] = {20000, 40000}; 
     int threads[] = {1, 2, 4, 7, 8, 16, 20, 40};
     int num_sizes = sizeof(sizes) / sizeof(sizes[0]);
     int num_threads = sizeof(threads) / sizeof(threads[0]);
