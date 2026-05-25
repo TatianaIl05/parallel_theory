@@ -74,10 +74,6 @@ int main() {
         double mem_size = ((double)(m * n + m + n) * sizeof(double)) / (1024 * 1024 * 1024);
         printf("Используется памяти: %.2f GB\n\n", mem_size);
         
-        
-        omp_set_num_threads(8);  
-        parallel_initialize(a, b, m, n);
-        
         omp_set_num_threads(1);
         double t_start = wtime();
         matrix_vector_product_sequential(a, b, c_seq, m, n);
@@ -87,6 +83,8 @@ int main() {
         printf("%-10s %-20s %-20s\n", "Потоки", "Время (сек)", "Ускорение");
 
         for (int t = 0; t < num_threads; t++) {
+            parallel_initialize(a, b, m, n);
+            
             omp_set_num_threads(threads[t]);
             
             t_start = wtime();
