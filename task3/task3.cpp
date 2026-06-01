@@ -1,212 +1,297 @@
-#include <iostream>
 #include <vector>
 #include <cmath>
-#include <iomanip>
+#include <iostream> 
+#include <time.h>
 #include <omp.h>
-#include <fstream>
+#include <cstring>
+
+#define MAX_ITER 100'000
+#define EPSILON 1e-6
 
 using namespace std;
 
-double wtime() {
-    return omp_get_wtime();
+double cpuSecond()
+{
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return ((double)ts.tv_sec + (double)ts.tv_nsec * 1.e-9);
 }
 
-void init_system(vector<double>& A, vector<double>& b, int n) {
-    #pragma omp parallel for collapse(2)
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            A[i * n + j] = (i == j) ? 2.0 : 1.0;
-        }
-    }
-    
-    #pragma omp parallel for
-    for (int i = 0; i < n; i++) {
-        b[i] = n + 1;
-    }
-}
+void no_parallel(vector<double>& A, vector<double>& b, 
+                 vector<double>& x, int N, double tau) { 
 
-int solve_serial(const vector<double>& A, const vector<double>& b, 
-                 vector<double>& x, int n, double tau, double eps, int max_iter) {
     int iter = 0;
-    double norm;
-    vector<double> x_old(n);
-    
-    do {
-        x_old = x;
-        norm = 0.0;
-        
-        for (int i = 0; i < n; i++) {
+    double error = 1.0;
+    vector<double> r(N);
+
+    while (iter < MAX_ITER && error > EPSILON) {
+        double error_sum = 0.0;
+
+        for (int i = 0; i < N; i++) {
             double Ax = 0.0;
-            for (int j = 0; j < n; j++) {
-                Ax += A[i * n + j] * x_old[j];
-            }
-            double r = b[i] - Ax;
-            x[i] = x_old[i] + tau * r;
-            norm += r * r;
+            for (int j = 0; j < N; j++)
+                Ax += A[i * N + j] * x[j];
+            r[i] = b[i] - Ax;
+            error_sum += r[i] * r[i];
         }
-        norm = sqrt(norm);
+
+        error = sqrt(error_sum);
+
+        for (int i = 0; i < N; i++)
+            x[i] += tau * r[i];
+
         iter++;
-    } while (iter < max_iter && norm > eps);
-    
-    return iter;
+    }               
 }
 
-int solve_v1(const vector<double>& A, const vector<double>& b, 
-             vector<double>& x, int n, double tau, double eps, int max_iter, 
-             int num_threads) {
+void run_no_parallel(vector<double>& A, vector<double>& b, 
+                  vector<double>& x, int N, double tau) {
+
+    fill(x.begin(), x.end(), 0.0);
+
+    double t = cpuSecond();
+    no_parallel(A, b, x, N, tau);
+    t = cpuSecond() - t;
+
+    cout << "Serial: " << t << endl;
+}
+
+void first_method(vector<double>& A, vector<double>& b, 
+                  vector<double>& x, int N, double tau) {
+
     int iter = 0;
-    double norm;
-    vector<double> x_old(n);
-    
-    omp_set_num_threads(num_threads);
-    
-    do {
-        x_old = x;
-        
+    double error = 1.0;
+    vector<double> r(N);
+
+    while (iter < MAX_ITER && error > EPSILON) {
+        double error_sum = 0.0;
+
+        #pragma omp parallel for reduction(+:error_sum)
+        for (int i = 0; i < N; i++) {
+            double Ax = 0.0;
+
+            for (int j = 0; j < N; j++)
+                Ax += A[i * N + j] * x[j];
+
+            r[i] = b[i] - Ax;
+            error_sum += r[i] * r[i];
+        }
+
+        error = sqrt(error_sum);
+
         #pragma omp parallel for
-        for (int i = 0; i < n; i++) {
-            double Ax = 0.0;
-            for (int j = 0; j < n; j++) {
-                Ax += A[i * n + j] * x_old[j];
-            }
-            double r = b[i] - Ax;
-            x[i] = x_old[i] + tau * r;
-        }
-        
-        norm = 0.0;
-        #pragma omp parallel for reduction(+:norm)
-        for (int i = 0; i < n; i++) {
-            double Ax = 0.0;
-            for (int j = 0; j < n; j++) {
-                Ax += A[i * n + j] * x[j];
-            }
-            double r = b[i] - Ax;
-            norm += r * r;
-        }
-        norm = sqrt(norm);
-        
-        iter++;
-    } while (iter < max_iter && norm > eps);
-    
-    return iter;
-}
+        for (int i = 0; i < N; i++)
+            x[i] += tau * r[i];
 
-int solve_v2(const vector<double>& A, const vector<double>& b, 
-             vector<double>& x, int n, double tau, double eps, int max_iter, 
-             int num_threads) {
-    int iter = 0;
-    double norm;
-    vector<double> x_old(n);
-    
-    omp_set_num_threads(num_threads);
-    
-    do {
-        x_old = x;
-        norm = 0.0;
-        
-        #pragma omp parallel
-        {
-            #pragma omp for
-            for (int i = 0; i < n; i++) {
-                double Ax = 0.0;
-                for (int j = 0; j < n; j++) {
-                    Ax += A[i * n + j] * x_old[j];
-                }
-                double r = b[i] - Ax;
-                x[i] = x_old[i] + tau * r;
-            }
-            
-            #pragma omp barrier
-            
-            double norm_local = 0.0;
-            #pragma omp for
-            for (int i = 0; i < n; i++) {
-                double Ax = 0.0;
-                for (int j = 0; j < n; j++) {
-                    Ax += A[i * n + j] * x[j];
-                }
-                double r = b[i] - Ax;
-                norm_local += r * r;
-            }
-            
-            #pragma omp atomic
-            norm += norm_local;
-        }
-        
-        norm = sqrt(norm);
         iter++;
-    } while (iter < max_iter && norm > eps);
-    
-    return iter;
-}
-
-double check_solution(const vector<double>& x, int n) {
-    double max_err = 0.0;
-    for (int i = 0; i < n; i++) {
-        double err = fabs(x[i] - 1.0);
-        if (err > max_err) max_err = err;
     }
-    return max_err;
+}
+
+void first_method_schedule(vector<double>& A, vector<double>& b, 
+                  vector<double>& x, int N, double tau) {
+
+    int iter = 0;
+    double error = 1.0;
+    vector<double> r(N);
+
+    while (iter < MAX_ITER && error > EPSILON) {
+        double error_sum = 0.0;
+
+        #pragma omp parallel for schedule(runtime) reduction(+:error_sum)
+        for (int i = 0; i < N; i++) {
+            double Ax = 0.0;
+
+            for (int j = 0; j < N; j++)
+                Ax += A[i * N + j] * x[j];
+
+            r[i] = b[i] - Ax;
+            error_sum += r[i] * r[i];
+        }
+
+        error = sqrt(error_sum);
+
+        #pragma omp parallel for schedule(runtime)
+        for (int i = 0; i < N; i++)
+            x[i] += tau * r[i];
+
+        iter++;
+    }
+}
+
+void run_first_method(vector<double>& A, vector<double>& b, 
+                  vector<double>& x, int N, double tau) {
+
+    fill(x.begin(), x.end(), 0.0);
+
+    double t = cpuSecond();
+    first_method(A, b, x, N, tau);
+    t = cpuSecond() - t;
+
+    cout << "First method: " << t << endl;
+}
+
+void run_first_method_schedule(vector<double>& A, vector<double>& b, 
+                  vector<double>& x, int N, double tau, const char* sched_type) {
+            
+    omp_sched_t kind;
+    int chunk = 0;
+    char sched_name[32];
+    sscanf(sched_type, "%31[^,],%d", sched_name, &chunk);
+
+    if (strcmp(sched_name, "static") == 0) kind = omp_sched_static;
+    else if (strcmp(sched_name, "dynamic") == 0) kind = omp_sched_dynamic;
+    else if (strcmp(sched_name, "guided") == 0) kind = omp_sched_guided;
+    else kind = omp_sched_static; 
+
+    omp_set_schedule(kind, chunk); 
+
+    fill(x.begin(), x.end(), 0.0);
+
+    double t = cpuSecond();
+    first_method_schedule(A, b, x, N, tau);
+    t = cpuSecond() - t;
+
+    cout << "First method with schedule: " << t << endl;
+}
+
+void second_method(vector<double>& A, vector<double>& b, 
+                  vector<double>& x, int N, double tau) {
+
+    int iter = 0;
+    double error = 1.0;
+    vector<double> r(N);
+
+    #pragma omp parallel 
+    {
+        while (iter < MAX_ITER && error > EPSILON) {
+            double error_sum = 0.0;
+
+            #pragma omp for
+            for (int i = 0; i < N; i++) {
+                double Ax = 0.0;
+                for (int j = 0; j < N; j++)
+                    Ax += A[i * N + j] * x[j];
+                r[i] = b[i] - Ax;
+                #pragma omp atomic
+                error_sum += r[i] * r[i];
+            }
+
+            #pragma omp for
+            for (int i = 0; i < N; i++)
+                x[i] += tau * r[i];
+            
+            #pragma omp single
+            {
+                error = sqrt(error_sum);
+                iter++;
+            }
+        }
+    }
+}
+
+void second_method_schedule(vector<double>& A, vector<double>& b, 
+                  vector<double>& x, int N, double tau) {
+
+    int iter = 0;
+    double error = 1.0;
+    vector<double> r(N);
+
+    #pragma omp parallel 
+    {
+        while (iter < MAX_ITER && error > EPSILON) {
+            double error_sum = 0.0;
+
+            #pragma omp for schedule(runtime)
+            for (int i = 0; i < N; i++) {
+                double Ax = 0.0;
+                for (int j = 0; j < N; j++)
+                    Ax += A[i * N + j] * x[j];
+                r[i] = b[i] - Ax;
+                #pragma omp atomic
+                error_sum += r[i] * r[i];
+            }
+
+            #pragma omp for schedule(runtime)
+            for (int i = 0; i < N; i++)
+                x[i] += tau * r[i];
+            
+            #pragma omp single
+            {
+                error = sqrt(error_sum);
+                iter++;
+            }
+        }
+    }
+}
+
+void run_second_method(vector<double>& A, vector<double>& b, 
+                  vector<double>& x, int N, double tau) {
+
+    fill(x.begin(), x.end(), 0.0);
+    
+    double t = cpuSecond();
+    second_method(A, b, x, N, tau);
+    t = cpuSecond() - t;
+
+    cout << "Second method: " << t << endl;
+}
+
+void run_second_method_schedule(vector<double>& A, vector<double>& b, 
+                  vector<double>& x, int N, double tau, const char* sched_type) {
+
+    omp_sched_t kind;
+    int chunk = 0;
+    char sched_name[32];
+    sscanf(sched_type, "%31[^,],%d", sched_name, &chunk);
+
+    if (strcmp(sched_name, "static") == 0) kind = omp_sched_static;
+    else if (strcmp(sched_name, "dynamic") == 0) kind = omp_sched_dynamic;
+    else if (strcmp(sched_name, "guided") == 0) kind = omp_sched_guided;
+    else kind = omp_sched_static; 
+
+    omp_set_schedule(kind, chunk); 
+
+    fill(x.begin(), x.end(), 0.0);
+
+    double t = cpuSecond();
+    second_method_schedule(A, b, x, N, tau);
+    t = cpuSecond() - t;
+
+    cout << "Second method with schedule: " << t << endl;
 }
 
 int main() {
-    int n = 18000;
-    double tau = 0.01;
-    double eps = 1e-5;
-    int max_iter = 50000;
-    
-    int threads[] = {1, 2, 4, 7, 8, 16, 20, 40};
-    int num_threads = sizeof(threads) / sizeof(threads[0]);
-    
-    cout << "n = " << n << "\n";
-    cout << "Память: " << (n * n * sizeof(double)) / (1024.0 * 1024.0 * 1024.0) << " GB\n";
-    cout << "tau = " << tau << ", eps = " << eps << "\n";
-    cout << "max_iter = " << max_iter << "\n";
-    
-    vector<double> A(n * n);
-    vector<double> b(n);
-    init_system(A, b, n);
-    
-    cout << "Последовательная версия\n";
-    vector<double> x_seq(n, 0.0);
-    double t1 = wtime();
-    int iter_seq = solve_serial(A, b, x_seq, n, tau, eps, max_iter);
-    double time_seq = wtime() - t1;
-    double err_seq = check_solution(x_seq, n);
-    
-    cout << "Итераций: " << iter_seq << "\n";
-    cout << "Время: " << fixed << setprecision(2) << time_seq << " сек\n";
-    cout << "Ошибка: " << scientific << err_seq << "\n\n";
-    
-    cout << "Потоки | Вариант 1 (parallel for)        | Вариант 2 (parallel)\n";
-    cout << "       | время (сек) ускорение итерации  | время (сек) ускорение итерации\n";
 
-    
-    for (int t = 0; t < num_threads; t++) {
-        int thr = threads[t];
-        
-        vector<double> x1(n, 0.0);
-        double t1_start = wtime();
-        int iter1 = solve_v1(A, b, x1, n, tau, eps, max_iter, thr);
-        double time1 = wtime() - t1_start;
-        double speedup1 = time_seq / time1;
-        double eff1 = speedup1 / thr * 100;
-        
-        vector<double> x2(n, 0.0);
-        double t2_start = wtime();
-        int iter2 = solve_v2(A, b, x2, n, tau, eps, max_iter, thr);
-        double time2 = wtime() - t2_start;
-        double speedup2 = time_seq / time2;
-        double eff2 = speedup2 / thr * 100;
-        
-        cout << setw(4) << thr << "   | "
-             << fixed << setprecision(2) << setw(8) << time1 << "  "
-             << setprecision(2) << setw(8) << speedup1 << "x "
-             << setw(6) << iter1 << "   | "
-             << setprecision(2) << setw(8) << time2 << "  "
-             << setprecision(2) << setw(8) << speedup2 << "x "
-             << setw(6) << iter2 << "\n";
-        
+    int N = 10000;
+    double tau = 0.00001;
+
+    vector<double> A(N * N, 1.0);
+    vector<double> b(N, N + 1.0);
+    vector<double> x(N, 0.0);
+
+    for (int i = 0; i < N; i++) 
+        A[i * N + i] = 2.0;
+
+    const char* schedules[] = {
+        "static",
+        "static,64",
+        "dynamic",
+        "dynamic,8",
+        "guided"
+    };
+
+    vector<int> threads = {2, 4, 6, 8, 16, 20};
+
+    run_no_parallel(A, b, x, N, tau);
+
+    for(int num: threads) {
+        cout << "\n" << num << " threads:" << endl;
+
+        omp_set_num_threads(num);
+        run_first_method(A, b, x, N, tau);
+        run_first_method_schedule(A, b, x, N, tau, "static");
+        run_second_method(A, b, x, N, tau);
+        run_second_method_schedule(A, b, x, N, tau, "static");
     }
 
     return 0;
