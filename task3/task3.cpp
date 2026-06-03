@@ -5,7 +5,7 @@
 #include <omp.h>
 #include <cstring>
 
-#define MAX_ITER 100'000
+#define MAX_ITER 100000
 #define EPSILON 1e-6
 
 using namespace std;
@@ -155,17 +155,22 @@ void run_first_method_schedule(vector<double>& A, vector<double>& b,
 }
 
 void second_method(vector<double>& A, vector<double>& b, 
-                  vector<double>& x, int N, double tau) {
-
+                         vector<double>& x, int N, double tau) {
     int iter = 0;
     double error = 1.0;
     vector<double> r(N);
-
-    #pragma omp parallel 
+    double total_sum = 0.0;
+    int flag = 1;  
+    
+    #pragma omp parallel
     {
-        while (iter < MAX_ITER && error > EPSILON) {
-            double error_sum = 0.0;
-
+        while (1) {
+            #pragma omp flush(flag)
+            if (!flag) break;
+            #pragma omp single
+            {
+                total_sum = 0.0;
+            }
             #pragma omp for
             for (int i = 0; i < N; i++) {
                 double Ax = 0.0;
@@ -173,34 +178,41 @@ void second_method(vector<double>& A, vector<double>& b,
                     Ax += A[i * N + j] * x[j];
                 r[i] = b[i] - Ax;
                 #pragma omp atomic
-                error_sum += r[i] * r[i];
+                total_sum += r[i] * r[i];
             }
-
+            
             #pragma omp for
             for (int i = 0; i < N; i++)
                 x[i] += tau * r[i];
             
             #pragma omp single
             {
-                error = sqrt(error_sum);
+                error = sqrt(total_sum);
                 iter++;
+                if (iter >= MAX_ITER || error <= EPSILON)
+                    flag = 0;
             }
         }
     }
 }
 
 void second_method_schedule(vector<double>& A, vector<double>& b, 
-                  vector<double>& x, int N, double tau) {
-
+                         vector<double>& x, int N, double tau) {
     int iter = 0;
     double error = 1.0;
     vector<double> r(N);
-
-    #pragma omp parallel 
+    double total_sum = 0.0;
+    int flag = 1;  
+    
+    #pragma omp parallel
     {
-        while (iter < MAX_ITER && error > EPSILON) {
-            double error_sum = 0.0;
-
+        while (1) {
+            #pragma omp flush(flag)
+            if (!flag) break;
+            #pragma omp single
+            {
+                total_sum = 0.0;
+            }
             #pragma omp for schedule(runtime)
             for (int i = 0; i < N; i++) {
                 double Ax = 0.0;
@@ -208,17 +220,19 @@ void second_method_schedule(vector<double>& A, vector<double>& b,
                     Ax += A[i * N + j] * x[j];
                 r[i] = b[i] - Ax;
                 #pragma omp atomic
-                error_sum += r[i] * r[i];
+                total_sum += r[i] * r[i];
             }
-
-            #pragma omp for schedule(runtime)
+            
+            #pragma omp for
             for (int i = 0; i < N; i++)
                 x[i] += tau * r[i];
             
             #pragma omp single
             {
-                error = sqrt(error_sum);
+                error = sqrt(total_sum);
                 iter++;
+                if (iter >= MAX_ITER || error <= EPSILON)
+                    flag = 0;
             }
         }
     }
@@ -260,6 +274,14 @@ void run_second_method_schedule(vector<double>& A, vector<double>& b,
     cout << "Second method with schedule: " << t << endl;
 }
 
+void check_result(vector<double>& x, int N) {
+    double error = 0.0;
+    for (int i = 0; i < N; i++) {
+        error += fabs(x[i] - 1.0);
+    }
+    cout << "Average error: " << error / N << endl;
+}
+
 int main() {
 
     int N = 10000;
@@ -280,7 +302,7 @@ int main() {
         "guided"
     };
 
-    vector<int> threads = {2, 4, 6, 8, 16, 20};
+    vector<int> threads = {1, 2, 4, 6, 8, 16, 20};
 
     run_no_parallel(A, b, x, N, tau);
 
@@ -289,9 +311,15 @@ int main() {
 
         omp_set_num_threads(num);
         run_first_method(A, b, x, N, tau);
-        run_first_method_schedule(A, b, x, N, tau, "static");
+        check_result(x, N);
+        
         run_second_method(A, b, x, N, tau);
-        run_second_method_schedule(A, b, x, N, tau, "static");
+        check_result(x, N);
+        
+        for(const char* sched : schedules) {
+            run_first_method_schedule(A, b, x, N, tau, sched);
+        }
+
     }
 
     return 0;
